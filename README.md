@@ -1,8 +1,6 @@
 # multiaudio
 Multithreaded Audio Processor in C++
 
-# Multi-Effect Audio Processor
-
 ## Clone Repository
 ```bash
 git clone https://github.com/pedicino/multiaudio.git
