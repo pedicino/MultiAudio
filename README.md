@@ -1,7 +1,7 @@
 # multiaudio
 Multithreaded Audio Processor in C++
 
-# NoiseGate Audio Processor
+# Multi-Effect Audio Processor
 
 ## Clone Repository
 ```bash
