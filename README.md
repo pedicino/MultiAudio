@@ -3,7 +3,7 @@ Multithreaded Audio Processor in C++
 
 ## Program Usage
 For now, a rudimentary noise gate works.
-Simply install and run the program in the CLI and speak into the microphone to test it!
+Once the program is running, speak into your microphone to test it!
 
 ## Clone Repository
 ```bash
