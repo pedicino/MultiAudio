@@ -230,7 +230,7 @@ public:
     (
         unsigned int rate = SAMPLE_RATE, 
         unsigned int size = FFT_SIZE, 
-        float thresh = 0.9f // CHANGE THIS VARIABLE TO MODIFY THE NOISE GATE
+        float thresh = 0.05f // CHANGE THIS VARIABLE TO MODIFY THE NOISE GATE
     ): 
         sampleRate(rate), 
         fftSize(size), 
