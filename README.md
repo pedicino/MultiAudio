@@ -1,6 +1,10 @@
 # multiaudio
 Multithreaded Audio Processor in C++
 
+## Program Usage
+For now, a rudimentary noise gate works.
+Simply install and run the program in the CLI and speak into the microphone to test it!
+
 ## Clone Repository
 ```bash
 git clone https://github.com/pedicino/multiaudio.git
