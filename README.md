@@ -39,6 +39,7 @@ g++ -o noise_gate NoiseGate.cpp -lrtaudio -lfftw3 -lpthread -lasound -ljack
 ```bash
 ./noise_gate
 ```
+(Press enter to terminate the program)
 
 ### Configuration
 You can modify noise gate parameters in the code directly:
