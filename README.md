@@ -2,8 +2,16 @@
 Multithreaded Audio Processor in C++
 
 ## Program Usage
-For now, a rudimentary noise gate works.
+For now, a rudimentary noise gate and 3 band EQ works.
 Once the program is running, speak into your microphone to test it!
+
+Type a command and press Enter to apply it:
+
+1. Toggle Noise Gate: "e"
+2. Toggle 3 Band EQ: "g"
+3. Increase gain for EQ bands: "1" (Low), "2" (Mid), and "3" (High)
+4. Decrease gain for EQ bands: "z" (Low), "x" (Mid), and "c" (High)
+5. Exit the program with "q"
 
 ## Clone Repository
 ```bash
@@ -63,33 +71,45 @@ pacman -S mingw-w64-x86_64-toolchain \
 
 ### Linux
 ```bash
-g++ -o noise_gate NoiseGate.cpp -lrtaudio -lfftw3 -lpthread -lasound -ljack
+g++ -o multiaudio.exe \
+    main.cpp \
+    audio/*.cpp \
+    effects/*.cpp \
+    -lrtaudio -lfftw3 -lpthread -lasound -ljack
 ```
 
 ### macOS
 ```bash
-g++ -o noise_gate NoiseGate.cpp -lrtaudio -lfftw3 -framework CoreAudio -framework CoreFoundation
+g++ -std=c++11 -o multiaudio \
+    main.cpp \
+    audio/*.cpp \
+    effects/*.cpp \
+    -fftw -rtaudio -lfftw3 -framework CoreAudio -framework CoreFoundation
 ```
 
 ### Windows (MSYS2 MinGW)
 ```bash
-g++ -o noise_gate.exe NoiseGate.cpp -lrtaudio -lfftw3 -lole32 -lwinmm
+g++ -o multiaudio.exe \
+    main.cpp \
+    audio/*.cpp \
+    effects/*.cpp \
+    -lrtaudio -lfftw3 -lole32 -lwinmm
 ```
 
 ## Run
 
 ### Linux and macOS
 ```bash
-./noise_gate
+./multiaudio
 ```
 
 ### Windows
 ```bash
-noise_gate.exe
+multiaudio.exe
 ```
-(Press ENTER to terminate the program)
 
 ### Configuration
 You can modify noise gate parameters in the code directly:
 - Adjust `thresh` in the `NoiseGate` constructor to control noise reduction sensitivity
 - Modify `SAMPLE_RATE`, `FRAMES_PER_BUFFER`, and `NUM_BANDS` as needed
+- Edit the `EQBAND_START` and `EQBAND_FACTOR` to modify the ranges for the low/mid/high bands on the EQ
