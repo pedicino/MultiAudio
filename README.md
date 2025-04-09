@@ -88,8 +88,11 @@ g++ -std=c++11 -o multiaudio \
 ```
 
 ### Windows (MSYS2 MinGW)
+
+Note that in the MinGW terminal, to navigate to your project directory, ``` cd .. ``` twice to navigate to the root directory, then ``` cd c ``` to go to your C: folder.
+
 ```bash
-g++ -o multiaudio.exe \
+g++ -I. -o multiaudio.exe \
     main.cpp \
     audio/*.cpp \
     effects/*.cpp \
@@ -105,7 +108,7 @@ g++ -o multiaudio.exe \
 
 ### Windows
 ```bash
-multiaudio.exe
+./multiaudio.exe
 ```
 
 ### Configuration
