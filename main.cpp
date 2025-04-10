@@ -2,6 +2,7 @@
 #include "audio/BufferQueue.h"
 #include "effects/NoiseGate.h"
 #include "effects/ThreeBandEQ.h"
+#include "effects/DeEsser.h" 
 
 // Global variables used by multiple threads
 BufferQueue inputBuffer;      // Queue for raw microphone input data
@@ -9,6 +10,14 @@ BufferQueue outputBuffer;     // Queue for processed output data
 NoiseGate noiseGate;          // The noise gate effect instance
 ThreeBandEQ eq;               // The 3-band EQ effect instance
 atomic<bool> running(true);   // Signal to control thread execution
+
+// Holds configuration for the de-esser effect
+struct DeEsserSettings {
+    bool enabled = true;
+    double reductionDB = 6.0;
+    int startFreq = 4000;
+    int endFreq = 10000;
+} deesserConfig;
 
 /*
 RtAudio Callback function
@@ -73,10 +82,11 @@ Audio processing thread function
 */
 void processingThread() 
 {
-    vector<float> inputData;                       // Holds incoming audio
+    vector<float> inputData;                        // Holds incoming audio
     vector<float> noiseGateData(FRAMES_PER_BUFFER); // Holds audio after NoiseGate
     vector<float> outputData(FRAMES_PER_BUFFER);    // Holds processed audio
-    
+    vector<float> deessedData(FRAMES_PER_BUFFER);   // Holds deessed audio
+
     // Process audio until told to stop
     while (running.load()) 
     {
@@ -93,8 +103,17 @@ void processingThread()
         // Apply the EQ effect to the audio
         eq.process(noiseGateData.data(), outputData.data(), inputData.size());
         
+        // Apply de-esser after EQ
+        if (deesserConfig.enabled) {
+            vector<double> temp(eqData.begin(), eqData.end());
+            applyDeEsser(temp, SAMPLE_RATE, deesserConfig.startFreq, deesserConfig.endFreq, deesserConfig.reductionDB);
+            transform(temp.begin(), temp.end(), deessedData.begin(), [](double x) { return static_cast<float>(x); });
+        } else {
+            deessedData = eqData;
+        }
+
         // Send the processed audio to the output queue, ta-da
-        outputBuffer.push(outputData);
+        outputBuffer.push(deessedData);
     }
 }
 
@@ -109,16 +128,20 @@ void moveCursorUp(int lines) {
 
 void printUI() {
     // Move up to the start of UI
-    moveCursorUp(8);
+    moveCursorUp(11);
     
     clearConsoleLine(); cout << "Noise Gate: " << (noiseGate.isEnabled() ? "Enabled " : "Disabled") << endl;
     clearConsoleLine(); cout << "EQ:         " << (eq.isEnabled() ? "Enabled " : "Disabled") << endl;
     clearConsoleLine(); cout << "Low band:   " << eq.getBandGain(0) << endl;
     clearConsoleLine(); cout << "Mid band:   " << eq.getBandGain(1) << endl;
     clearConsoleLine(); cout << "High band:  " << eq.getBandGain(2) << endl;
+    clearConsoleLine(); cout << "De-Esser:   " << (deesserConfig.enabled ? "Enabled " : "Disabled") << endl;
+    clearConsoleLine(); cout << "Sib Freqs:  " << deesserConfig.startFreq << " Hz - " << deesserConfig.endFreq << " Hz" << endl;
+    clearConsoleLine(); cout << "Reduction:  " << deesserConfig.reductionDB << " dB" << endl;
 
     clearConsoleLine(); cout << "Controls - e: Toggle Noise Gate, g: Toggle EQ, q: Quit" << endl;
     clearConsoleLine(); cout << "          1/z: Low+-, 2/x: Mid+-, 3/c: High+-" << endl;
+    clearConsoleLine(); cout << "           d: Toggle De-Esser, +/-: Adjust Reduction" << endl;
     clearConsoleLine(); cout << "Input: ";
 }
 
@@ -172,7 +195,7 @@ int main()
         // Start the audio stream (call the callback)
         audio.startStream();
         
-        cout << string(8, '\n');
+        cout << string(11, '\n');
         printUI();
         
         while (running.load()) {
@@ -205,6 +228,15 @@ int main()
                     break;
                 case 'g':   
                     eq.setEnabled(!eq.isEnabled());
+                    break;
+                case 'd':
+                    deesserConfig.enabled = !deesserConfig.enabled;
+                    break;
+                case '+': 
+                    deesserConfig.reductionDB += 1.0;
+                    break;
+                case '-': 
+                    deesserConfig.reductionDB = std::max(0.0, deesserConfig.reductionDB - 1.0); 
                     break;
             }
         

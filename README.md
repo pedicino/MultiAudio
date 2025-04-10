@@ -12,6 +12,8 @@ Type a command and press Enter to apply it:
 3. Increase gain for EQ bands: "1" (Low), "2" (Mid), and "3" (High)
 4. Decrease gain for EQ bands: "z" (Low), "x" (Mid), and "c" (High)
 5. Exit the program with "q"
+6. Adjust De-Esser Reduction: "+" (increase), "-" (decrease)
+7. Exit the program with "q"
 
 ## Clone Repository
 ```bash
