@@ -1,58 +1,60 @@
-multiaudio
+# multiaudio
 
-Multithreaded Real-Time Audio Processor in C++
+**Multithreaded Real-Time Audio Processor in C++**
 
-Program Usage
+---
 
-This project provides a graphical user interface (GUI) for adjusting live audio effects in real time. Once the program is running, you can:
+## Program Usage
 
-Enable/disable the Noise Gate, Limiter, 3-Band EQ, and De-Esser
+This project provides a **graphical user interface (GUI)** for adjusting live audio effects in real time.
 
-Adjust thresholds, gains, attack/release times, and de-essing parameters
+Once the program is running, you can:
+- Enable/disable the **Noise Gate**, **Limiter**, **3-Band EQ**, and **De-Esser**
+- Adjust thresholds, gains, attack/release times, and de-essing parameters
 
 Simply speak into your microphone to test the effects!
 
-Clone Repository
+> **Note:** The previous text-based controls are now **defunct**. Use the GUI exclusively.
 
+---
+
+## Clone Repository
+
+```bash
 git clone --recurse-submodules https://github.com/pedicino/multiaudio.git
 cd multiaudio
+```
 
-Prerequisites
+---
 
-Compiler Requirements
+## Prerequisites
 
-A modern C++ compiler supporting C++11 or later
+### Compiler Requirements
 
-Linux: GCC 7+ or Clang
+- A modern C++ compiler supporting C++11 or later:
+  - **Linux:** GCC 7+ or Clang
+  - **macOS:** Clang (Xcode Command Line Tools)
+  - **Windows:** MSYS2 with MinGW-w64
 
-macOS: Clang (Xcode Command Line Tools)
+### Required Libraries
 
-Windows: MSYS2 with MinGW-w64
+- **RtAudio** (Audio input/output)
+- **FFTW3** (Fast Fourier Transform)
+- **GLFW** (Window and OpenGL context)
+- **OpenGL** (Graphics rendering)
+- **Dear ImGui** (GUI rendering)
+- **Platform-specific audio and graphics libraries:**
+  - **Linux:** `libasound2`, `libjack`
+  - **macOS:** CoreAudio, CoreFoundation, Cocoa
+  - **Windows:** winmm, ole32
 
-Required Libraries
+---
 
-RtAudio (Audio input/output)
+## Dependency Installation
 
-FFTW3 (Fast Fourier Transform)
+### Linux (Ubuntu/Debian)
 
-GLFW (Window and OpenGL context)
-
-OpenGL (Graphics rendering)
-
-Dear ImGui (GUI rendering)
-
-Platform-specific audio and graphics libraries:
-
-Linux: libasound2, libjack
-
-macOS: CoreAudio, CoreFoundation, Cocoa
-
-Windows: winmm, ole32
-
-Dependency Installation
-
-Linux (Ubuntu/Debian)
-
+```bash
 sudo apt-get update
 sudo apt-get install -y \
     build-essential \
@@ -62,21 +64,24 @@ sudo apt-get install -y \
     libgl1-mesa-dev \
     libasound2-dev \
     libjack-dev
+```
 
-macOS (using Homebrew)
+### macOS (using Homebrew)
 
+```bash
 # Install Homebrew (if not already installed)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install dependencies
 brew install fftw rtaudio glfw
+```
 
-Windows (using MSYS2)
+### Windows (using MSYS2)
 
-Install MSYS2 from https://www.msys2.org/
+1. Install MSYS2 from https://www.msys2.org/
+2. Open the **MSYS2 MinGW 64-bit** terminal
 
-Open the MSYS2 MinGW 64-bit terminal
-
+```bash
 # Update package database
 pacman -Syu
 
@@ -89,51 +94,68 @@ pacman -S mingw-w64-x86_64-toolchain \
           mingw-w64-x86_64-cmake \
           mingw-w64-x86_64-winmm \
           mingw-w64-x86_64-ole32
+```
 
-Compilation
+---
 
-Linux
+## Compilation
 
+### Linux
+
+```bash
 g++ -o multiaudio \
     main.cpp \
     audio/*.cpp \
     effects/*.cpp \
     gui/*.cpp \
     -lrtaudio -lfftw3 -lglfw -lGL -lpthread -lasound -ljack
+```
 
-macOS
+### macOS
 
+```bash
 g++ -std=c++11 -o multiaudio \
     main.cpp \
     audio/*.cpp \
     effects/*.cpp \
     gui/*.cpp \
-    -lrtaudio -lfftw3 -lglfw -framework OpenGL -framework Cocoa -framework CoreAudio -framework CoreFoundation
+    -lrtaudio -lfftw3 -lglfw \
+    -framework OpenGL -framework Cocoa -framework CoreAudio -framework CoreFoundation
+```
 
-Windows (MSYS2 MinGW)
+### Windows (MSYS2 MinGW)
 
-# Navigate to your project directory in the MSYS2 MinGW terminal
+```bash
+# Navigate to your project directory
 cd /c/path/to/multiaudio
 
 # Then build
 bash build.bat
+```
 
-(build.bat uses g++ to compile all source files and link required libraries.)
+> **Note:** `build.bat` uses g++ to compile all source files and link the required libraries.
 
-Run
+---
 
-Linux and macOS
+## Run
 
+### Linux and macOS
+
+```bash
 ./multiaudio
+```
 
-Windows
+### Windows
 
+```bash
 ./multiaudio.exe
+```
 
 When you launch the program, the GUI will open, allowing you to control and monitor live audio effects in real time.
 
-Configuration
+---
 
-Adjust SAMPLE_RATE, FRAMES_PER_BUFFER, and NUM_CHANNELS in common.h if necessary.
+## Configuration
 
-Tweak default effect parameters by editing the constructors in main.cpp before building.
+- Adjust `SAMPLE_RATE`, `FRAMES_PER_BUFFER`, and `NUM_CHANNELS` in `common.h` if necessary.
+- Tweak default effect parameters by editing the constructors in `main.cpp` before building.
