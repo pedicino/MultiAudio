@@ -3,34 +3,66 @@
 
 #include "../common.h"
 
-/*
-Thread-safe queue of audio buffers
-    - Passes audio between threads
-    - Producers add audio data to the buffer
-    - Consumers receive data for further processing
-*/
-class BufferQueue 
+#include <queue>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+
+namespace audio {
+
+/**
+ * Thread-safe queue for audio buffer management.
+ * Facilitates thread communication through producer-consumer pattern.
+ */
+class BufferQueue
 {
 private:
-    queue<vector<float>> bufferQueue;
+    //--------------------------------------------------------------------------
+    // Internal State
+    //--------------------------------------------------------------------------
+    std::queue<std::vector<float>> bufferQueue;
     size_t queueCapacity;
-    mutex mtx;
-    condition_variable queueHasData;
-    condition_variable queueHasSpace;
-    atomic<bool> done;
+    std::mutex mtx;
+    std::condition_variable queueHasData;
+    std::condition_variable queueHasSpace;
+    std::atomic<bool> done;
 
 public:
-    // Constructor - creates an EMPTY queue that can hold up to "capacity" buffers
-    BufferQueue(size_t capacity = 10);
-    
-    // Producer - add a new audio buffer to the queue
-    void push(const vector<float>& buffer);
-    
-    // Consumer - Remove the next audio buffer from the queue and return it
-    bool pop(vector<float>& buffer);
-    
-    // Shutdown - Signal all waiting threads
+    //--------------------------------------------------------------------------
+    // Lifecycle
+    //--------------------------------------------------------------------------
+    /**
+     * Creates an empty queue with specified capacity.
+     * @param capacity Maximum number of buffers that can be held (default: 10)
+     */
+    explicit BufferQueue(size_t capacity = 10);
+
+    //--------------------------------------------------------------------------
+    // Queue Operations
+    //--------------------------------------------------------------------------
+    /**
+     * Adds a new audio buffer to the queue.
+     * Blocks if queue is full until space becomes available.
+     * @param buffer Audio data to be added
+     */
+    void push(const std::vector<float>& buffer);
+
+    /**
+     * Removes the next audio buffer from the queue.
+     * Blocks if queue is empty until data becomes available.
+     * @param buffer Reference to store the retrieved data
+     * @return true if successful, false if queue is empty and shutdown signaled
+     */
+    bool pop(std::vector<float>& buffer);
+
+    /**
+     * Signals shutdown to all waiting threads.
+     * Wakes all blocked producers and consumers.
+     */
     void setDone();
 };
+
+} // namespace audio
 
 #endif // BUFFER_QUEUE_H
