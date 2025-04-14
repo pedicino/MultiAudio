@@ -1,7 +1,16 @@
 #include "Limiter.h"
-#include <iostream>
 
-const float TIME_EPSILON = 1e-6f;
+#include <algorithm>
+#include <cmath>
+
+namespace audio {
+
+// Small constant to prevent division by zero
+constexpr float TIME_EPSILON = 1e-6f;
+
+//--------------------------------------------------------------------------
+// Lifecycle
+//--------------------------------------------------------------------------
 
 Limiter::Limiter(unsigned int rate, float thresh, float attackMs, float releaseMs)
     : sampleRate(rate),
@@ -13,55 +22,62 @@ Limiter::Limiter(unsigned int rate, float thresh, float attackMs, float releaseM
     setReleaseTime(releaseMs);
 }
 
+//--------------------------------------------------------------------------
+// Private Methods
+//--------------------------------------------------------------------------
+
 void Limiter::calculateCoeffs()
 {
+    float attackSeconds = std::max(TIME_EPSILON, attackTimeMs / 1000.0f);
+    float releaseSeconds = std::max(TIME_EPSILON, releaseTimeMs / 1000.0f);
 
-    attackCoeff = expf(-1.0f / (std::max(TIME_EPSILON, attackTimeMs / 1000.0f) * sampleRate));
-    releaseCoeff = expf(-1.0f / (std::max(TIME_EPSILON, releaseTimeMs / 1000.0f) * sampleRate));
+    // Calculate smoothing coefficients for exponential gain control
+    attackCoeff = std::exp(-1.0f / (attackSeconds * sampleRate));
+    releaseCoeff = std::exp(-1.0f / (releaseSeconds * sampleRate));
 }
 
-void Limiter::process(const float* inputBuffer, float* outputBuffer, size_t bufferSize)
+//--------------------------------------------------------------------------
+// Audio Processing Interface
+//--------------------------------------------------------------------------
+
+void Limiter::process(const float* inputBuffer, float* outputBuffer, std::size_t bufferSize)
 {
     if (!limiterActive.load() || bufferSize == 0)
     {
         std::copy(inputBuffer, inputBuffer + bufferSize, outputBuffer);
         return;
     }
-    
 
-    float peak = 0.0f;
-    for (size_t i = 0; i < bufferSize; ++i)
+    for (std::size_t i = 0; i < bufferSize; ++i)
     {
-        peak = std::max(peak, std::abs(inputBuffer[i]));
-    }
+        float inputAbs = std::abs(inputBuffer[i]);
 
-    // Calculate the desired gain reduction based on the peak
-    // If peak is below threshold, target gain is 1.0 (no reduction)
-    // If peak is above threshold, target gain reduces the peak *to* the threshold
-    float targetGain = (peak <= threshold) ? 1.0f : threshold / peak;
+        // Calculate target gain - unity if below threshold, otherwise reduce to threshold
+        float targetGain = (inputAbs <= threshold) ?
+                           1.0f :
+                           threshold / (inputAbs + TIME_EPSILON);
 
-    // --- Smooth the gain change using attack/release ---
-    // We apply smoothing once per block based on the block's peak.
-    // A more sophisticated limiter would do this sample-by-sample or use a lookahead buffer.
-    
-    if (targetGain < currentGain)
-    {
-        currentGain = attackCoeff * currentGain + (1.0f - attackCoeff) * targetGain;
-        currentGain = std::max(currentGain, targetGain);
-    }
-    else
-    {
-        currentGain = releaseCoeff * currentGain + (1.0f - releaseCoeff) * targetGain;
-        currentGain = std::min(currentGain, 1.0f);
-    }
+        // Apply attack/release smoothing based on whether gain decreases or increases
+        if (targetGain < currentGain)
+        {
+            // Attack phase - gain reduction
+            currentGain = attackCoeff * currentGain + (1.0f - attackCoeff) * targetGain;
+            currentGain = std::max(currentGain, targetGain);
+        }
+        else
+        {
+            // Release phase - gain recovery
+            currentGain = releaseCoeff * currentGain + (1.0f - releaseCoeff) * targetGain;
+            currentGain = std::min(currentGain, 1.0f);
+        }
 
-    for (size_t i = 0; i < bufferSize; ++i)
-    {
         outputBuffer[i] = inputBuffer[i] * currentGain;
     }
 }
 
-// --- Parameter Setters ---
+//--------------------------------------------------------------------------
+// Limiter Controls
+//--------------------------------------------------------------------------
 
 void Limiter::setThreshold(float newThreshold)
 {
@@ -98,9 +114,15 @@ float Limiter::getReleaseTime() const
 void Limiter::setEnabled(bool isEnabled)
 {
     limiterActive.store(isEnabled);
+    if (!isEnabled)
+    {
+        currentGain = 1.0f;
+    }
 }
 
 bool Limiter::isEnabled() const
 {
     return limiterActive.load();
 }
+
+} // namespace audio
