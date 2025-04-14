@@ -1,64 +1,82 @@
-# multiaudio
-Multithreaded Audio Processor in C++
+multiaudio
 
-## Program Usage
-For now, a rudimentary noise gate and 3 band EQ works.
-Once the program is running, speak into your microphone to test it!
+Multithreaded Real-Time Audio Processor in C++
 
-Type a command and press Enter to apply it:
+Program Usage
 
-1. Toggle Noise Gate: "e"
-2. Toggle 3 Band EQ: "g"
-3. Increase gain for EQ bands: "1" (Low), "2" (Mid), and "3" (High)
-4. Decrease gain for EQ bands: "z" (Low), "x" (Mid), and "c" (High)
-5. Exit the program with "q"
-6. Adjust De-Esser Reduction: "+" (increase), "-" (decrease)
-7. Exit the program with "q"
+This project provides a graphical user interface (GUI) for adjusting live audio effects in real time. Once the program is running, you can:
 
-## Clone Repository
-```bash
-git clone https://github.com/pedicino/multiaudio.git
+Enable/disable the Noise Gate, Limiter, 3-Band EQ, and De-Esser
+
+Adjust thresholds, gains, attack/release times, and de-essing parameters
+
+Simply speak into your microphone to test the effects!
+
+Clone Repository
+
+git clone --recurse-submodules https://github.com/pedicino/multiaudio.git
 cd multiaudio
-```
 
-## Prerequisites
-### Compiler Requirements
-- A modern C++ compiler supporting C++11 or later
-  - Linux: GCC 7+ or Clang
-  - macOS: Clang (Xcode Command Line Tools)
-  - Windows: MinGW-w64 or Visual Studio
-- Required Libraries:
-  - RtAudio
-  - FFTW3
-  - Platform-specific audio libraries
+Prerequisites
 
-## Dependency Installation
+Compiler Requirements
 
-### Linux (Ubuntu/Debian)
-```bash
+A modern C++ compiler supporting C++11 or later
+
+Linux: GCC 7+ or Clang
+
+macOS: Clang (Xcode Command Line Tools)
+
+Windows: MSYS2 with MinGW-w64
+
+Required Libraries
+
+RtAudio (Audio input/output)
+
+FFTW3 (Fast Fourier Transform)
+
+GLFW (Window and OpenGL context)
+
+OpenGL (Graphics rendering)
+
+Dear ImGui (GUI rendering)
+
+Platform-specific audio and graphics libraries:
+
+Linux: libasound2, libjack
+
+macOS: CoreAudio, CoreFoundation, Cocoa
+
+Windows: winmm, ole32
+
+Dependency Installation
+
+Linux (Ubuntu/Debian)
+
 sudo apt-get update
 sudo apt-get install -y \
     build-essential \
     libfftw3-dev \
     librtaudio-dev \
+    libglfw3-dev \
+    libgl1-mesa-dev \
     libasound2-dev \
-    jack \
     libjack-dev
-```
 
-### macOS (using Homebrew)
-```bash
+macOS (using Homebrew)
+
 # Install Homebrew (if not already installed)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install dependencies
-brew install fftw rtaudio
-```
+brew install fftw rtaudio glfw
 
-### Windows (using MSYS2)
-1. Install MSYS2 from https://www.msys2.org/
-2. Open MSYS2 MinGW 64-bit terminal
-```bash
+Windows (using MSYS2)
+
+Install MSYS2 from https://www.msys2.org/
+
+Open the MSYS2 MinGW 64-bit terminal
+
 # Update package database
 pacman -Syu
 
@@ -66,55 +84,56 @@ pacman -Syu
 pacman -S mingw-w64-x86_64-toolchain \
           mingw-w64-x86_64-fftw \
           mingw-w64-x86_64-rtaudio \
-          mingw-w64-x86_64-cmake
-```
+          mingw-w64-x86_64-glfw \
+          mingw-w64-x86_64-opengl \
+          mingw-w64-x86_64-cmake \
+          mingw-w64-x86_64-winmm \
+          mingw-w64-x86_64-ole32
 
-## Compilation
+Compilation
 
-### Linux
-```bash
-g++ -o multiaudio.exe \
+Linux
+
+g++ -o multiaudio \
     main.cpp \
     audio/*.cpp \
     effects/*.cpp \
-    -lrtaudio -lfftw3 -lpthread -lasound -ljack
-```
+    gui/*.cpp \
+    -lrtaudio -lfftw3 -lglfw -lGL -lpthread -lasound -ljack
 
-### macOS
-```bash
+macOS
+
 g++ -std=c++11 -o multiaudio \
     main.cpp \
     audio/*.cpp \
     effects/*.cpp \
-    -fftw -rtaudio -lfftw3 -framework CoreAudio -framework CoreFoundation
-```
+    gui/*.cpp \
+    -lrtaudio -lfftw3 -lglfw -framework OpenGL -framework Cocoa -framework CoreAudio -framework CoreFoundation
 
-### Windows (MSYS2 MinGW)
+Windows (MSYS2 MinGW)
 
-Note that in the MinGW terminal, to navigate to your project directory, ``` cd .. ``` twice to navigate to the root directory, then ``` cd c ``` to go to your C: folder.
+# Navigate to your project directory in the MSYS2 MinGW terminal
+cd /c/path/to/multiaudio
 
-```bash
-g++ -I. -o multiaudio.exe \
-    main.cpp \
-    audio/*.cpp \
-    effects/*.cpp \
-    -lrtaudio -lfftw3 -lole32 -lwinmm
-```
+# Then build
+bash build.bat
 
-## Run
+(build.bat uses g++ to compile all source files and link required libraries.)
 
-### Linux and macOS
-```bash
+Run
+
+Linux and macOS
+
 ./multiaudio
-```
 
-### Windows
-```bash
+Windows
+
 ./multiaudio.exe
-```
 
-### Configuration
-You can modify noise gate parameters in the code directly:
-- Adjust `thresh` in the `NoiseGate` constructor to control noise reduction sensitivity
-- Modify `SAMPLE_RATE`, `FRAMES_PER_BUFFER`, and `NUM_BANDS` as needed
-- Edit the `EQBAND_START` and `EQBAND_FACTOR` to modify the ranges for the low/mid/high bands on the EQ
+When you launch the program, the GUI will open, allowing you to control and monitor live audio effects in real time.
+
+Configuration
+
+Adjust SAMPLE_RATE, FRAMES_PER_BUFFER, and NUM_CHANNELS in common.h if necessary.
+
+Tweak default effect parameters by editing the constructors in main.cpp before building.
