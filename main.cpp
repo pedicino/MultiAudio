@@ -2,327 +2,310 @@
 #include "audio/BufferQueue.h"
 #include "effects/NoiseGate.h"
 #include "effects/ThreeBandEQ.h"
-#include "effects/Limiter.h" // <-- 1. Add include for Limiter
-#include "effects/DeEsser.h" 
+#include "effects/Limiter.h"
+#include "effects/DeEsser.h"
+#include "gui/GUIManager.h"
+#include <iostream> // Needed for std::cout, std::cerr
+#include <rtaudio/RtAudio.h> // Keep this explicit include
+#include <vector>   // Ensure vector is included (likely via common.h)
+#include <algorithm> // For std::copy, std::fill_n, std::transform
+#include <cmath>     // For std::isnan, std::isinf (optional checks)
+#include <limits>    // For numeric_limits (optional checks)
 
-// Global variables used by multiple threads
-BufferQueue inputBuffer;      // Queue for raw microphone input data
-BufferQueue outputBuffer;     // Queue for processed output data
-NoiseGate noiseGate;          // The noise gate effect instance
-ThreeBandEQ eq;               // The 3-band EQ effect instance
-Limiter limiter;              // <-- 2. Add Limiter instance
-atomic<bool> running(true);   // Signal to control thread execution
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <sched.h>
+#endif
 
-// Holds configuration for the de-esser effect
-struct DeEsserSettings {
-    bool enabled = true;
-    double reductionDB = 6.0;
-    int startFreq = 4000;
-    int endFreq = 10000;
-} deesserConfig;
-
-/*
-RtAudio Callback function
-    - Called by audio API for each audio buffer
-    - Receive the raw audio from the microphone, pass it to thread, send processed audio back
-*/
-int audioCallback(
-    void *outputBufferCallback, // Renamed to avoid conflict with global 'outputBuffer'
-    void *inputBufferCallback,  // Renamed to avoid conflict with global 'inputBuffer'
-    unsigned int numFrames,    // Number of frames in the current buffer
-    double streamTime,         // Current stream time in seconds
-    RtAudioStreamStatus status,// Status flags from RtAudio
-    void *userData             // User-provided data pointer
-)
+// Safe buffer resize function with padding to prevent memory issues
+void safeResize(vector<float> &buffer, size_t newSize)
 {
-    // Cast void pointers to actual audio sample type
-    float *input = (float*)inputBufferCallback;
-    float *output = (float*)outputBufferCallback;
-
-    // Handle stream overflow
-    if (status)
-    {
-        if (running.load()) {
-             cerr << "ERROR (non-fatal): Stream overflow :(" << endl;
-        }
+    if (newSize > 1024 * 1024 * 16) { // Example limit: 16M floats
+         std::cerr << "Warning: Attempting large resize: " << newSize << std::endl;
     }
-
-    // Create a vector from the input samples, add them to the processing queue
-    vector<float> inBuffer(input, input + numFrames);
-    ::inputBuffer.push(inBuffer); // Use :: scope for global
-
-    // Try to get processed output data
-    vector<float> outBuffer;
-    bool success = ::outputBuffer.pop(outBuffer); // Use :: scope for global
-
-    // If we managed to get the data and its the right size
-    if (success && outBuffer.size() == numFrames)
-    {
-        // Copy the processed data to the output buffer (audible)
-        // Use std::copy for potential efficiency
-        std::copy(outBuffer.begin(), outBuffer.end(), output);
+    try {
+        buffer.resize(newSize + 32); // Add padding for safety
+    } catch (const std::bad_alloc& e) {
+        std::cerr << "ERROR: Failed to resize buffer to " << newSize + 32 << " floats. " << e.what() << std::endl;
+        // Handle allocation failure, maybe throw or exit
     }
-    else
-    {
-        // If we couldn't get data or wrong size, fill with silence
-        // Check if we are shutting down
-         if (!success && !running.load()) {
-             // Normal shutdown, fill with silence
-              std::fill_n(output, numFrames, 0.0f);
-         } else if (success && outBuffer.size() != numFrames) {
-              // Size mismatch - unexpected, log and silence
-              if (running.load()){ // Avoid logging during shutdown race condition
-                  cerr << "ERROR: Popped buffer size mismatch! Expected " << numFrames << ", got " << outBuffer.size() << endl;
-              }
-              std::fill_n(output, numFrames, 0.0f);
-         } else {
-            // Pop failed while running - potential underrun, fill silence
-             std::fill_n(output, numFrames, 0.0f);
-             if (running.load()) {
-                // maybe log underrun if it happens frequently?
-             }
-         }
-    }
-
-    return 0; // Success :)
 }
 
+// --- Global Variables ---
+audio::BufferQueue inputBuffer;
+audio::BufferQueue outputBuffer;
+audio::NoiseGate noiseGate;
+audio::ThreeBandEQ eq;
+audio::Limiter limiter;
+atomic<bool> running(true);
+struct DeEsserSettings {
+    bool enabled = false; double reductionDB = 6.0; int startFreq = 4000; int endFreq = 10000;
+} deesserConfig;
+// --- End Global Variables ---
 
-/*
- Audio processing thread function
-    - Runs in a separate thread from the audio I/O
-    - Takes audio data from the input queue
-    - Processes it through the effects chain
-    - Places results in output queue
-*/
+int audioCallback(void *outputBufferCallback, void *inputBufferCallback, unsigned int nFrames,
+                  double streamTime, RtAudioStreamStatus status, void *userData)
+{
+    static vector<float> fixedInBuffer(FRAMES_PER_BUFFER * NUM_CHANNELS + 64); // Uses NUM_CHANNELS from common.h
+
+    float *input = static_cast<float *>(inputBufferCallback);
+    float *output = static_cast<float *>(outputBufferCallback);
+    size_t samplesAvailable = nFrames * NUM_CHANNELS; // Total samples for all channels
+
+    if (status) { std::cerr << "Warning: Audio stream status: " << status << std::endl; }
+    if (samplesAvailable > fixedInBuffer.size()) {
+        std::cerr << "ERROR: nFrames (" << nFrames << ") * NUM_CHANNELS (" << NUM_CHANNELS
+                  << ") exceeds fixedInBuffer size in audioCallback!" << std::endl;
+        std::fill_n(output, samplesAvailable, 0.0f); return 1;
+    }
+
+    // Copy data from RtAudio input buffer
+    std::copy(input, input + samplesAvailable, fixedInBuffer.begin());
+    // Push exact amount to processing thread
+    vector<float> currentInput(fixedInBuffer.begin(), fixedInBuffer.begin() + samplesAvailable);
+    ::inputBuffer.push(currentInput);
+
+    // Attempt to get processed data
+    vector<float> currentOutput; // Let pop resize this
+    bool pop_success = ::outputBuffer.pop(currentOutput); // <<<--- Check success
+
+    if (pop_success) {
+        // --- Debug Print (Success Case) ---
+        // Uncomment the next line to verify pops are succeeding (can be verbose)
+        // std::cout << "DEBUG: audioCallback pop SUCCESS (size: " << currentOutput.size() << ")" << std::endl;
+
+        if (currentOutput.size() == samplesAvailable) {
+            std::copy(currentOutput.begin(), currentOutput.end(), output);
+        } else {
+            // Size mismatch is an error condition
+            std::cerr << "ERROR: Popped output buffer size mismatch in audioCallback! Expected "
+                      << samplesAvailable << ", got " << currentOutput.size() << ". Outputting silence." << std::endl;
+            std::fill_n(output, samplesAvailable, 0.0f);
+        }
+    } else {
+        // --- Debug Print (Failure Case) ---
+        // Pop failed - this means the processing thread isn't providing data in time (underrun)
+        // This is expected during shutdown but indicates a problem if it happens constantly while running.
+         std::cout << "DEBUG: audioCallback pop FAILED (Output Underrun)" << std::endl; // <<<--- Print if pop fails
+
+        if (running.load()) { /* Log persistent underruns if needed */ }
+        std::fill_n(output, samplesAvailable, 0.0f); // Output silence
+    }
+    return 0;
+}
+
 void processingThread()
 {
-    // Buffers needed for the processing chain
-    // Chain: Input -> NoiseGate -> EQ -> (optional) DeEsser -> Limiter -> Output
-    vector<float> inputData;                          // Holds incoming audio from queue
-    vector<float> noiseGateOutput(FRAMES_PER_BUFFER);   // Holds audio after NoiseGate
-    vector<float> eqOutput(FRAMES_PER_BUFFER);          // Holds audio after EQ
-    vector<float> deessedData(FRAMES_PER_BUFFER);       // Holds de-essed audio (if enabled)
-    vector<float> limiterOutput(FRAMES_PER_BUFFER);     // Holds final processed audio (Limiter output)
+    std::cout << "[Processing Thread] Started." << std::endl;
+#ifdef _WIN32
+    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+         std::cerr << "[Processing Thread] Warning: Failed to set thread priority. Error code: " << GetLastError() << std::endl;
+    } else { std::cout << "[Processing Thread] Priority set to TIME_CRITICAL." << std::endl; }
+#elif defined(__APPLE__) || defined(__linux__)
+    struct sched_param param; param.sched_priority = sched_get_priority_max(SCHED_RR);
+    if (pthread_setschedparam(pthread_self(), SCHED_RR, &param) != 0) {
+        std::cerr << "[Processing Thread] Warning: Failed to set real-time thread priority (requires permissions?)." << std::endl;
+    } else { std::cout << "[Processing Thread] Priority set to SCHED_RR max." << std::endl; }
+#endif
 
-    // Process audio until told to stop
-    while (running.load())
-    {
-        // Try to get input data from the queue
-        if (!inputBuffer.pop(inputData))
-        {
-            if (running.load()) {
-                std::cerr << "Warning: inputBuffer.pop failed while running." << std::endl;
-            }
-            break;  // Exit thread loop on pop failure (likely shutdown)
+    // Adjust buffer sizes based on actual NUM_CHANNELS
+    const size_t MAX_EXPECTED_FRAMES = FRAMES_PER_BUFFER * 2; // Max frames expected
+    const size_t PADDED_BUFFER_FRAMES = MAX_EXPECTED_FRAMES + 64; // Frame padding
+
+    vector<float> inputData; // Pop resizes this
+    vector<float> monoChannel(PADDED_BUFFER_FRAMES); // Buffer for mono processing
+    vector<float> gateOutput(PADDED_BUFFER_FRAMES);
+    vector<float> eqOutput(PADDED_BUFFER_FRAMES);
+    vector<float> deessedData(PADDED_BUFFER_FRAMES);
+    vector<float> limiterOutput(PADDED_BUFFER_FRAMES); // Final mono processed stage
+    vector<float> outputData; // Final stereo (or multi-channel) output
+    vector<double> tempDeEsser(PADDED_BUFFER_FRAMES);
+
+    std::cout << "[Processing Thread] Entering main loop." << std::endl;
+    while (running.load()) {
+        if (!inputBuffer.pop(inputData)) {
+            if (running.load()) { std::cerr << "[Processing Thread] Warning: inputBuffer.pop failed while running." << std::endl; }
+            else { std::cout << "[Processing Thread] Input buffer done, exiting loop." << std::endl; }
+            break;
+        }
+        size_t samplesReceived = inputData.size();
+        if (samplesReceived == 0) { std::cerr << "[Processing Thread] Warning: Received empty input buffer." << std::endl; continue; }
+        if (samplesReceived % NUM_CHANNELS != 0) {
+             std::cerr << "[Processing Thread] ERROR: Received buffer size (" << samplesReceived << ") not divisible by NUM_CHANNELS (" << NUM_CHANNELS << ")!" << std::endl;
+             continue;
+        }
+        size_t numFrames = samplesReceived / NUM_CHANNELS; // Number of frames per channel
+
+        // Ensure intermediate buffers are large enough for MONO processing
+        if (monoChannel.size() < numFrames) monoChannel.resize(numFrames);
+        if (gateOutput.size() < numFrames) gateOutput.resize(numFrames);
+        if (eqOutput.size() < numFrames) eqOutput.resize(numFrames);
+        if (deessedData.size() < numFrames) deessedData.resize(numFrames);
+        if (limiterOutput.size() < numFrames) limiterOutput.resize(numFrames);
+        if (tempDeEsser.size() < numFrames) tempDeEsser.resize(numFrames);
+
+        // Extract first channel for mono processing
+        // Assumes interleaved inputData: [L1, R1, L2, R2, ...]
+        for (size_t i = 0; i < numFrames; ++i) {
+             monoChannel[i] = inputData[i * NUM_CHANNELS]; // Take first channel sample
         }
 
-        // Ensure intermediate buffers match the size of the current input block
-        size_t currentBufferSize = inputData.size();
-        if (noiseGateOutput.size() != currentBufferSize) noiseGateOutput.resize(currentBufferSize);
-        if (eqOutput.size() != currentBufferSize) eqOutput.resize(currentBufferSize);
-        if (deessedData.size() != currentBufferSize) deessedData.resize(currentBufferSize);
-        if (limiterOutput.size() != currentBufferSize) limiterOutput.resize(currentBufferSize);
+        // --- Effects Chain (on mono data) ---
+        noiseGate.process(monoChannel.data(), gateOutput.data(), numFrames);
+        eq.process(gateOutput.data(), eqOutput.data(), numFrames);
 
-        // --- Processing Chain ---
-        // 1. Noise Gate
-        noiseGate.process(inputData.data(), noiseGateOutput.data(), currentBufferSize);
-
-        // 2. EQ
-        eq.process(noiseGateOutput.data(), eqOutput.data(), currentBufferSize);
-
-        // 3. Optional De-Esser (apply it if enabled)
+        const float* deesserInputPtr = eqOutput.data();
         if (deesserConfig.enabled) {
-            // Copy EQ output into a temporary buffer of doubles
-            vector<double> temp(eqOutput.begin(), eqOutput.end());
-            // Call the de-esser function (assumed to modify temp in-place)
-            applyDeEsser(temp, SAMPLE_RATE, deesserConfig.startFreq,
-                         deesserConfig.endFreq, deesserConfig.reductionDB);
-            // Convert back to float for further processing
-            transform(temp.begin(), temp.end(), deessedData.begin(),
-                      [](double x) { return static_cast<float>(x); });
-        } else {
-            // If not enabled, simply pass the EQ output
-            deessedData = eqOutput;
+            std::copy(eqOutput.begin(), eqOutput.begin() + numFrames, tempDeEsser.begin());
+            audio::applyDeEsser(tempDeEsser, SAMPLE_RATE, deesserConfig.startFreq, deesserConfig.endFreq, deesserConfig.reductionDB);
+            std::transform(tempDeEsser.begin(), tempDeEsser.begin() + numFrames, deessedData.begin(), [](double x){ return static_cast<float>(x); });
+            deesserInputPtr = deessedData.data();
+        }
+        limiter.process(deesserInputPtr, limiterOutput.data(), numFrames); // limiterOutput is mono
+
+        // --- Prepare Output Buffer ---
+        size_t outputSamples = numFrames * NUM_CHANNELS; // Total samples for output
+        outputData.resize(outputSamples);
+
+        // Duplicate processed mono data to all output channels (dual mono if NUM_CHANNELS=2)
+        for (size_t i = 0; i < numFrames; ++i) {
+            for (unsigned int ch = 0; ch < NUM_CHANNELS; ++ch) {
+                 outputData[i * NUM_CHANNELS + ch] = limiterOutput[i];
+            }
         }
 
-        // 4. Limiter: apply the limiter to the de-essed audio
-        limiter.process(deessedData.data(), limiterOutput.data(), currentBufferSize);
+        // --- Check output data before pushing --- <<<--- ADDED CHECK
+        float minVal = 0.0f, maxVal = 0.0f;
+        bool allZero = true;
+        bool hasNanInf = false;
+        if (!outputData.empty()) {
+            minVal = outputData[0];
+            maxVal = outputData[0];
+            for(float val : outputData) {
+                if (std::isnan(val) || std::isinf(val)) {
+                    hasNanInf = true;
+                    allZero = false; // Treat NaN/Inf as non-zero for this check
+                    break; // Stop checking once NaN/Inf is found
+                }
+                if (val != 0.0f) allZero = false;
+                if (val < minVal) minVal = val;
+                if (val > maxVal) maxVal = val;
+            }
+        }
+        // // Print status of the buffer being pushed
+        // std::cout << "[Processing Thread] Pre-push check: size=" << outputData.size()
+        //           << ", allZero=" << (allZero ? "true" : "false")
+        //           << ", hasNaN/Inf=" << (hasNanInf ? "true" : "false")
+        //           << ", min=" << minVal << ", max=" << maxVal << std::endl;
+        // // --- End check ---
 
-        // 5. Push the single, final output to the output queue
-        outputBuffer.push(limiterOutput);
+        // Push the final data to the output queue
+        outputBuffer.push(outputData);
     }
+    std::cout << "[Processing Thread] Exited main loop." << std::endl;
 }
 
-
-// Console UI management - NO CHANGES HERE
-void clearConsoleLine() {
-    cout << "\33[2K\r";
-}
-
-void moveCursorUp(int lines) {
-    cout << "\033[" << lines << "A";
-}
-
-void printUI() {
-    // Move up to the start of UI
-    moveCursorUp(11);
-    
-    clearConsoleLine(); cout << "Noise Gate: " << (noiseGate.isEnabled() ? "Enabled " : "Disabled") << endl;
-    clearConsoleLine(); cout << "EQ:         " << (eq.isEnabled() ? "Enabled " : "Disabled") << endl;
-    clearConsoleLine(); std::cout << "Limiter:    " << (limiter.isEnabled() ? "Enabled " : "Disabled") << " (T:" << limiter.getThreshold() << ")" << std::endl;
-    clearConsoleLine(); cout << "Low band:   " << eq.getBandGain(0) << endl;
-    clearConsoleLine(); cout << "Mid band:   " << eq.getBandGain(1) << endl;
-    clearConsoleLine(); cout << "High band:  " << eq.getBandGain(2) << endl;
-    clearConsoleLine(); cout << "De-Esser:   " << (deesserConfig.enabled ? "Enabled " : "Disabled") << endl;
-    clearConsoleLine(); cout << "Sib Freqs:  " << deesserConfig.startFreq << " Hz - " << deesserConfig.endFreq << " Hz" << endl;
-    clearConsoleLine(); cout << "Reduction:  " << deesserConfig.reductionDB << " dB" << endl;
-
-    clearConsoleLine(); cout << "Controls - e: Toggle Noise Gate, g: Toggle EQ, q: Quit" << endl; // NO CHANGE
-    clearConsoleLine(); cout << "          1/z: Low+-, 2/x: Mid+-, 3/c: High+-" << endl;
-    clearConsoleLine(); cout << "           d: Toggle De-Esser, +/-: Adjust Reduction" << endl;
-    clearConsoleLine(); cout << "Input: ";
-}
-
-/*
- Good ol' main
- - Set up audio system
- - Spawn threads
-*/
 int main()
 {
-    try
-    {
-        // Create an RtAudio instance for our I/O
-        #ifdef _WIN32
-            RtAudio audio(RtAudio::Api::WINDOWS_WASAPI); // Use WASAPI on Windows
-        #else
-            RtAudio audio; // Use default API on other platforms
-        #endif
+    std::cout << "DEBUG: main() started." << std::endl;
+    try {
+        std::cout << "DEBUG: Creating RtAudio object..." << std::endl;
+#ifdef _WIN32
+        RtAudio audio(RtAudio::Api::WINDOWS_WASAPI);
+#else
+        RtAudio audio;
+#endif
+        std::cout << "DEBUG: RtAudio object created." << std::endl;
 
-        // Verify audio devices are available
-        if (audio.getDeviceCount() < 1)
-        {
-            cerr << "How do you not have audio devices..." << endl;
+        std::cout << "DEBUG: Checking audio device count..." << std::endl;
+        if (audio.getDeviceCount() < 1) { cerr << "ERROR: No audio devices detected" << endl; return 1; }
+        std::cout << "DEBUG: Audio device count checked (" << audio.getDeviceCount() << ")." << std::endl;
+
+        RtAudio::StreamParameters inputParams;
+        inputParams.deviceId = audio.getDefaultInputDevice(); inputParams.nChannels = NUM_CHANNELS; inputParams.firstChannel = 0;
+        std::cout << "DEBUG: Input parameters set (Device: " << inputParams.deviceId << ", Channels: " << inputParams.nChannels << ")." << std::endl;
+
+        RtAudio::StreamParameters outputParams;
+        outputParams.deviceId = audio.getDefaultOutputDevice(); outputParams.nChannels = NUM_CHANNELS; outputParams.firstChannel = 0;
+        std::cout << "DEBUG: Output parameters set (Device: " << outputParams.deviceId << ", Channels: " << outputParams.nChannels << ")." << std::endl;
+
+        unsigned int bufferFrames = FRAMES_PER_BUFFER;
+        std::cout << "DEBUG: Buffer frames variable set to " << bufferFrames << "." << std::endl;
+
+        std::cout << "DEBUG: Opening audio stream..." << std::endl;
+        RtAudioErrorType openResult = audio.openStream(
+            &outputParams, &inputParams, RTAUDIO_FLOAT32, SAMPLE_RATE, &bufferFrames, &audioCallback, nullptr);
+        if (openResult != RTAUDIO_NO_ERROR) {
+             std::cerr << "ERROR: Failed to open RtAudio stream: " << audio.getErrorText() << std::endl;
+             return 1;
+        }
+        std::cout << "DEBUG: Audio stream opened (bufferFrames possibly adjusted to: " << bufferFrames << ")." << std::endl;
+
+        std::cout << "DEBUG: Starting processing thread..." << std::endl;
+        thread procThread(::processingThread);
+        std::cout << "DEBUG: Processing thread object created." << std::endl;
+
+        std::cout << "DEBUG: Starting audio stream..." << std::endl;
+        RtAudioErrorType startResult = audio.startStream();
+         if (startResult != RTAUDIO_NO_ERROR) {
+             std::cerr << "ERROR: Failed to start RtAudio stream: " << audio.getErrorText() << std::endl;
+             running.store(false); if (audio.isStreamOpen()) audio.closeStream();
+             inputBuffer.setDone(); outputBuffer.setDone(); if (procThread.joinable()) procThread.join();
+             return 1;
+         }
+        std::cout << "DEBUG: Audio stream started." << std::endl;
+
+        std::cout << "DEBUG: Initializing GUIManager..." << std::endl;
+        gui::GUIManager guiManager(noiseGate, eq, limiter, deesserConfig.enabled, deesserConfig.reductionDB, deesserConfig.startFreq, deesserConfig.endFreq);
+        std::cout << "DEBUG: GUIManager object created." << std::endl;
+
+        std::cout << "DEBUG: Calling guiManager.initialize()..." << std::endl;
+        if (!guiManager.initialize()) {
+            cerr << "ERROR: Failed to initialize GUI" << endl;
+            running.store(false); if (audio.isStreamOpen()) { if (audio.isStreamRunning()) audio.stopStream(); audio.closeStream(); }
+            inputBuffer.setDone(); outputBuffer.setDone(); if (procThread.joinable()) procThread.join();
             return 1;
         }
+        std::cout << "DEBUG: guiManager.initialize() successful." << std::endl;
 
-        // Configure audio input parameters
-        RtAudio::StreamParameters inputParams;
-        inputParams.deviceId = audio.getDefaultInputDevice();
-        inputParams.nChannels = NUM_CHANNELS;
-        inputParams.firstChannel = 0;
-
-        // Configure audio output parameters
-        RtAudio::StreamParameters outputParams;
-        outputParams.deviceId = audio.getDefaultOutputDevice();
-        outputParams.nChannels = NUM_CHANNELS;
-        outputParams.firstChannel = 0;
-
-        // Set up audio buffer size
-        unsigned int bufferFrames = FRAMES_PER_BUFFER;
-
-        // Open the audio stream with the callback function
-        // Use nullptr for userData if not needed
-        audio.openStream(
-            &outputParams,       // Output configuration
-            &inputParams,        // Input configuration
-            RTAUDIO_FLOAT32,     // Sample format (32-bit float)
-            SAMPLE_RATE,         // Sample rate
-            &bufferFrames,       // Buffer size
-            &audioCallback,      // Callback function
-            nullptr              // Pass nullptr for userData
-        );
-
-        // Create and start the audio processing thread
-        thread procThread(::processingThread);
-
-        // Start the audio stream (call the callback)
-        audio.startStream();
-        
-        cout << string(11, '\n');
-        printUI();
-
-        while (running.load()) {
-            char key;
-            cin >> key;
-            switch (key) {
-                case 'q':
-                    running.store(false);
-                    break;
-                case '1':
-                    eq.setBandGain(0, eq.getBandGain(0) + 0.1f);
-                    break;
-                case 'z':
-                    eq.setBandGain(0, eq.getBandGain(0) - 0.1f);
-                    break;
-                case '2':
-                    eq.setBandGain(1, eq.getBandGain(1) + 0.1f);
-                    break;
-                case 'x':
-                    eq.setBandGain(1, eq.getBandGain(1) - 0.1f);
-                    break;
-                case '3':
-                    eq.setBandGain(2, eq.getBandGain(2) + 0.1f);
-                    break;
-                case 'c':
-                    eq.setBandGain(2, eq.getBandGain(2) - 0.1f);
-                    break;
-                case 'e':
-                    noiseGate.setEnabled(!noiseGate.isEnabled());
-                    break;
-                case 'g':
-                    eq.setEnabled(!eq.isEnabled());
-                    break;
-                case 'l':
-                    limiter.setEnabled(!limiter.isEnabled());
-                    break;
-                case 'd':
-                    deesserConfig.enabled = !deesserConfig.enabled;
-                    break;
-                case '+': 
-                    deesserConfig.reductionDB += 1.0;
-                    break;
-                case '-': 
-                    deesserConfig.reductionDB = std::max(0.0, deesserConfig.reductionDB - 1.0); 
-                    break;
-            }
-
-             if (running.load()) {
-                 printUI();
-             }
+        std::cout << "DEBUG: Entering main GUI loop..." << std::endl;
+        while (running.load() && guiManager.isRunning()) {
+            guiManager.update();
+            // std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        std::cout << "DEBUG: Exited main GUI loop." << std::endl;
 
-        // Begin clean shutdown
-        cout << "\nShutting down..." << endl; // Add newline for clarity
+        std::cout << "DEBUG: Initiating shutdown..." << std::endl;
+        running.store(false);
 
-        // Stop and close the audio stream
-        // Check if stream is open before stopping/closing
+        std::cout << "DEBUG: Stopping/closing audio stream..." << std::endl;
         if (audio.isStreamOpen()) {
-            if (audio.isStreamRunning()) {
-                audio.stopStream();
-            }
-            audio.closeStream();
-        }
+            if (audio.isStreamRunning()) { audio.stopStream(); std::cout << "DEBUG: Audio stream stopped." << std::endl; }
+            audio.closeStream(); std::cout << "DEBUG: Audio stream closed." << std::endl;
+        } else { std::cout << "DEBUG: Audio stream was not open." << std::endl; }
 
-        // Signal buffer queues to unblock waiting threads
-        inputBuffer.setDone();
-        outputBuffer.setDone();
+        std::cout << "DEBUG: Signaling buffer queues done..." << std::endl;
+        inputBuffer.setDone(); outputBuffer.setDone();
 
-        // Wait for processing thread to finish
-        // Check if thread is joinable before joining
-        if(procThread.joinable()) {
-             procThread.join();
-        }
+        std::cout << "DEBUG: Joining processing thread..." << std::endl;
+        if (procThread.joinable()) { procThread.join(); std::cout << "DEBUG: Processing thread joined." << std::endl;
+        } else { std::cout << "DEBUG: Processing thread was not joinable." << std::endl; }
 
+        std::cout << "DEBUG: GUI cleanup (implicit via destructor)..." << std::endl;
+        std::cout << "DEBUG: Shutdown sequence complete." << std::endl;
 
-        cout << "Shutdown complete." << endl;
     }
-    catch (...)
-    {
-        cerr << "ERROR: An unexpected error occurred." << endl; // Simplified catch-all
+    catch (const std::exception& e) {
+         std::cerr << "ERROR: Standard exception caught in main: " << e.what() << std::endl;
+         return 1;
+    }
+    catch (...) {
+        cerr << "ERROR: Unknown exception occurred in main" << endl;
         return 1;
     }
 
+    std::cout << "DEBUG: main() finished successfully." << std::endl;
     return 0;
 }
