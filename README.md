@@ -4,6 +4,10 @@
 
 ---
 
+![Multiaudio GUI](multiaudio_screenshot.png)
+
+---
+
 ## Program Usage
 
 This project provides a **graphical user interface (GUI)** for adjusting live audio effects in real time.
