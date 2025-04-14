@@ -1,130 +1,199 @@
 #include "NoiseGate.h"
 
-NoiseGate::NoiseGate(unsigned int rate, unsigned int size, float thresh)
-    : sampleRate(rate), 
-      fftSize(size), 
-      threshold(thresh), 
-      ngActive(false), 
+#include <algorithm>
+#include <cmath>
+
+namespace audio {
+
+//--------------------------------------------------------------------------
+// Lifecycle
+//--------------------------------------------------------------------------
+
+NoiseGate::NoiseGate(unsigned int rate, unsigned int size, float thresh, float attackMs, float releaseMs)
+    : AudioEffect(rate),
+      fftSize(size),
+      currentGain(0.0f),
       bandEnergies(NUM_BANDS, 0.0)
 {
-    // Allocate memory for FFT processing
+    setThreshold(thresh);
+    setAttackTime(attackMs);
+    setReleaseTime(releaseMs);
+
     timeData = fftw_alloc_real(fftSize);
     frequencyData = fftw_alloc_complex(fftSize / 2 + 1);
-    
-    // Create FFT plan
-    fftPlan = fftw_plan_dft_r2c_1d(fftSize, timeData, frequencyData, FFTW_MEASURE);
-}
+    fftPlan = fftw_plan_dft_r2c_1d(fftSize, timeData, frequencyData, FFTW_ESTIMATE);
 
-NoiseGate::~NoiseGate() 
-{
-    // Clean up FFT resources
-    fftw_destroy_plan(fftPlan);
-    fftw_free(timeData);
-    fftw_free(frequencyData);
-}
-
-void NoiseGate::calculateBandEnergies() 
-{
-    // Reset all band energies to 0
-    fill(bandEnergies.begin(), bandEnergies.end(), 0.0);
-    
-    // Process each frequency bin (skip DC at index 0)
-    for (unsigned int i = 1; i < fftSize / 2; i++) 
+    if (!timeData || !frequencyData || !fftPlan)
     {
-        // Calculate magnitude of this frequency component
+        effectActive.store(false);
+    }
+
+    reset();
+}
+
+NoiseGate::~NoiseGate()
+{
+    if (fftPlan)
+    {
+        fftw_destroy_plan(fftPlan);
+    }
+    if (timeData)
+    {
+        fftw_free(timeData);
+    }
+    if (frequencyData)
+    {
+        fftw_free(frequencyData);
+    }
+}
+
+//--------------------------------------------------------------------------
+// Private Methods
+//--------------------------------------------------------------------------
+
+void NoiseGate::calculateCoeffs()
+{
+    float attackSeconds = std::max(NG_TIME_EPSILON, attackTimeMs / 1000.0f);
+    float releaseSeconds = std::max(NG_TIME_EPSILON, releaseTimeMs / 1000.0f);
+
+    attackCoeff = std::exp(-1.0f / (attackSeconds * sampleRate));
+    releaseCoeff = std::exp(-1.0f / (releaseSeconds * sampleRate));
+}
+
+void NoiseGate::calculateBandEnergies()
+{
+    std::fill(bandEnergies.begin(), bandEnergies.end(), 0.0);
+
+    for (unsigned int i = 1; i < fftSize / 2; ++i)
+    {
         double real = frequencyData[i][0];
         double imaginary = frequencyData[i][1];
-        double magnitude = sqrt(real * real + imaginary * imaginary);
-        
-        // Determine which band this frequency belongs to
-        unsigned int band = static_cast<unsigned int>(
-            NUM_BANDS * log2(i) / log2(fftSize / 2)
-        );
-        
-        // Ensure we don't exceed the number of bands
-        if (band < NUM_BANDS) 
+        double energy = real * real + imaginary * imaginary;
+
+        if (i > 0)
         {
-            // Add this energy (magnitude^2) to the band
-            bandEnergies[band] += magnitude * magnitude;
+            unsigned int band = static_cast<unsigned int>(
+                (NUM_BANDS - 1) * std::log2(static_cast<double>(i)) /
+                std::log2(static_cast<double>(fftSize / 2 - 1))
+            );
+            band = std::min(band, static_cast<unsigned int>(NUM_BANDS - 1));
+
+            if (band < bandEnergies.size())
+            {
+                bandEnergies[band] += energy;
+            }
         }
     }
-    
-    // Normalize band energies
-    for (unsigned int i = 0; i < NUM_BANDS; i++) 
-    {
-        bandEnergies[i] /= fftSize;
-    }
 }
 
-float NoiseGate::determineGateState() 
+float NoiseGate::determineTargetGain(const float* inputBuffer, std::size_t numFrames)
 {
-    double totalEnergy = 0.0;
-    
-    // Sum up the energy across all frequency bands
-    for (unsigned int i = 0; i < NUM_BANDS; i++) 
+    std::fill_n(timeData, fftSize, 0.0);
+    std::size_t copySize = std::min(numFrames, static_cast<std::size_t>(fftSize));
+    for (std::size_t i = 0; i < copySize; ++i)
     {
-        totalEnergy += bandEnergies[i];
+        timeData[i] = static_cast<double>(inputBuffer[i]);
     }
-    
-    // Average the energy across bands
-    double avgEnergy = totalEnergy / NUM_BANDS;
-    
-    // Binary decision (prototype) - open or closed?
-    return avgEnergy > threshold ? 1.0f : 0.0f;
-}
 
-float NoiseGate::calculateGateGain(const float* inputBuffer, size_t bufferSize) 
-{
-    // Zero out the FFT input buffer
-    fill_n(timeData, fftSize, 0.0);
-    
-    // Copy input data to FFT buffer (no windowing yet)
-    size_t copySize = min(bufferSize, static_cast<size_t>(fftSize));
-    for (size_t i = 0; i < copySize; i++) 
+    if (fftPlan)
     {
-        timeData[i] = inputBuffer[i];
+        fftw_execute(fftPlan);
     }
-    
-    // Perform forward FFT to convert time domain to frequency domain
-    fftw_execute(fftPlan);
-    
-    // Calculate the energy in each frequency band
+    else
+    {
+        return 1.0f;
+    }
+
     calculateBandEnergies();
-    
-    // Finally, determine if gate should be open or closed
-    return determineGateState();
+
+    double totalEnergy = 0.0;
+    for (double energy : bandEnergies)
+    {
+        totalEnergy += energy;
+    }
+
+    double avgEnergy = (NUM_BANDS > 0) ? (totalEnergy / NUM_BANDS) : 0.0;
+    double normalizationFactor = static_cast<double>(fftSize);
+    double normalizedAvgEnergy = avgEnergy / normalizationFactor;
+
+    return (normalizedAvgEnergy > (threshold * threshold)) ? 1.0f : 0.0f;
 }
 
-void NoiseGate::process(const float* inputBuffer, float* outputBuffer, size_t bufferSize) 
+//--------------------------------------------------------------------------
+// AudioEffect Interface
+//--------------------------------------------------------------------------
+
+void NoiseGate::process(const float* inputBuffer, float* outputBuffer, std::size_t numFrames)
 {
-    // If the gate is disabled, just copy the original audio input to the new output unchanged
-    if (!ngActive.load()) 
+    if (!effectActive.load() || numFrames == 0)
     {
-        copy(inputBuffer, inputBuffer + bufferSize, outputBuffer);
+        std::copy(inputBuffer, inputBuffer + numFrames, outputBuffer);
+        if (!effectActive.load())
+        {
+            currentGain = 0.0f;
+        }
         return;
     }
-    
-    // Calculate the gate gain (0.0 = silent, 1.0 = pass through)
-    float gateGain = calculateGateGain(inputBuffer, bufferSize);
-    
-    // Apply the gain to each sample in the buffer
-    for (size_t i = 0; i < bufferSize; i++) 
+
+    float targetGain = determineTargetGain(inputBuffer, numFrames);
+
+    for (std::size_t i = 0; i < numFrames; ++i)
     {
-        outputBuffer[i] = inputBuffer[i] * gateGain;
+        if (targetGain > currentGain)
+        {
+            currentGain = attackCoeff * currentGain + (1.0f - attackCoeff) * targetGain;
+            currentGain = std::min(currentGain, targetGain);
+        }
+        else
+        {
+            currentGain = releaseCoeff * currentGain + (1.0f - releaseCoeff) * targetGain;
+            currentGain = std::max(currentGain, targetGain);
+        }
+
+        outputBuffer[i] = inputBuffer[i] * currentGain;
     }
 }
 
-void NoiseGate::setThreshold(float newThreshold) 
+void NoiseGate::reset()
 {
-    threshold = max(0.0f, min(1.0f, newThreshold));
+    std::fill(bandEnergies.begin(), bandEnergies.end(), 0.0);
+    currentGain = 0.0f;
 }
 
-void NoiseGate::setEnabled(bool isEnabled) 
+//--------------------------------------------------------------------------
+// Noise Gate Controls
+//--------------------------------------------------------------------------
+
+void NoiseGate::setThreshold(float newThreshold)
 {
-    ngActive.store(isEnabled);
+    threshold = std::max(0.0f, std::min(1.0f, newThreshold));
 }
 
-bool NoiseGate::isEnabled() const 
+float NoiseGate::getThreshold() const
 {
-    return ngActive.load();
+    return threshold;
 }
+
+void NoiseGate::setAttackTime(float ms)
+{
+    attackTimeMs = std::max(0.1f, ms);
+    calculateCoeffs();
+}
+
+float NoiseGate::getAttackTime() const
+{
+    return attackTimeMs;
+}
+
+void NoiseGate::setReleaseTime(float ms)
+{
+    releaseTimeMs = std::max(1.0f, ms);
+    calculateCoeffs();
+}
+
+float NoiseGate::getReleaseTime() const
+{
+    return releaseTimeMs;
+}
+
+} // namespace audio
