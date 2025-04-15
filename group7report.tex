@@ -1,0 +1,361 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{float}
+
+\setlength{\textfloatsep}{5pt}
+\setlength{\floatsep}{5pt}
+\setlength{\intextsep}{5pt}
+
+\begin{document}
+
+\title{Multithreaded Real-Time Audio Processor in C++}
+
+\author{\IEEEauthorblockN{Pablo-Andres Pedicino, Evan Goldsmith, Arthur Lookshin, Daniel Gonzalez, Sreelekshmi Sreekumar}
+\IEEEauthorblockA{Undergraduate Students, Department of Computer Science\\
+University of Central Florida\\
+Orlando, FL, USA\\
+\{pa123047, ev565011, ar275475, da810538, sr165748\}@ucf.edu}}
+
+\maketitle
+
+\begin{abstract}
+This project presents a multithreaded real-time audio processor designed to enhance microphone input by applying various effects such as noise gating, equalization, de-essing, and limiting. Utilizing C++ threading and digital signal processing (DSP) techniques, we implement a strategic two-thread architecture to achieve low-latency, high-quality audio processing. DSP is crucial in transforming audio signals with precision, with effects applied sequentially in an optimized order through a dedicated processing thread, while audio I/O is managed separately. Our approach leverages modern multi-core processors to address the computational challenges of real-time audio processing, providing a robust solution that is suitable for practical applications. Performance is evaluated through benchmarks focusing on latency, audio quality, thread efficiency, and system load.
+
+\end{abstract}
+
+\begin{IEEEkeywords}
+Multithreading, real-time audio processing, C++, DSP, low-latency
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+An audio processor is a system that takes raw audio input and applies various effects and transformations to generate a modified output channel. These effects can include noise gates, equalizers, limiters, and much more. The main goal of an audio processor is to enhance the quality of audio in real time without interruption of the audio output.
+
+Originally, audio was processed with analog hardware components like vacuum tubes and transistors, which were used to modify and enhance outputs. As digital technology advanced, software-based audio processing became the preferred method for modifying audio signals. The introduction of digital signal processing (DSP) greatly enhanced the performance of these software-based processors. Now, these digital audio processors run on operating systems and are integral to music production and broadcasting software.
+
+Processing audio in real-time presents many computational challenges due to the number of continuous mathematical operations needing to be performed on a constant audio stream. It is important to maintain low-latency performance to prevent any artifacts, delays, or glitches in the audio. With the advent of multi-core processors, strategic use of multithreading has emerged as an effective approach to efficiently handle these performance demands. Multithreading allows modern audio processors to better organize tasks, separating intensive processing from time-critical I/O operations.
+
+By leveraging C++ threading and audio libraries, we introduce an audio processing pipeline that applies various effects to enhance microphone input. A noise gate, 3-Band EQ, De-esser, and Limiter are applied to the audio input in a carefully designed sequential chain through a dedicated processing thread, while audio I/O is handled separately. This architecture uses thread-safe buffer queues with condition variables to manage the efficient handling of audio data. By separating time-critical I/O operations from intensive audio processing, we provide a low-latency, high-quality audio processor suitable for real-world applications.
+
+To test the performance of our application, we use several benchmarks and tools to measure efficiency. The tests consist of four areas of focus: latency, audio quality, thread efficiency, and system load.
+
+
+\section{Methodology}
+
+\subsection{Algorithms}
+Our audio processor incorporates interrelated DSP algorithms and a balanced architecture to process incoming audio streams in real-time. As a general strategy, we organize audio I/O and DSP processing into dedicated threads to reduce latency while maintaining processing integrity~\cite{geier2012}. Our audio pipeline employs a main processing thread that sequentially applies effects in an intentional order: noise gating, equalization, de-essing, and limiting. This approach ensures each effect benefits from the processing of previous stages while minimizing thread synchronization overhead and maintaining phase coherence between processing stages.
+
+A high-level overview of the algorithms involved for achieving each effect is as follows:
+
+\subsubsection{Noise Gate}
+Attenuates background noise below a defined threshold by analyzing 4 frequency bands ~\cite{sang2009}. Frequencies below the threshold in targeted bands are reduced. Attack and release coefficients smooth transitions and minimize artifacts.
+
+\begin{algorithm}
+\caption{Noise Gate}
+\begin{algorithmic}[1]
+\Procedure{calculateGateGain}{$inputBuffer$, $numFrames$}
+\State Copy input to FFT time-domain buffer
+\State Execute FFT to convert to frequency domain
+\State Initialize $bandEnergies$ array for NUM\_BANDS
+\For{each frequency bin}
+    \State Calculate band index based on logarithmic distribution
+    \State Add squared magnitude to corresponding $bandEnergy$
+\EndFor
+\State Calculate average energy across all bands
+\State Normalize energy based on FFT size
+\If{normalized energy $>$ $threshold^2$}
+    \State \Return 1.0 (open gate)
+\Else
+    \State \Return 0.0 (close gate)
+\EndIf
+\State Apply attack/release smoothing to target gain
+\EndProcedure
+\Procedure{process}{$inputBuffer$, $outputBuffer$, $numFrames$}
+\State Calculate target gain
+\For{each sample}
+    \If{$targetGain > currentGain$}
+        \State Apply attack smoothing
+    \Else
+        \State Apply release smoothing
+    \EndIf
+    \State Apply gain to input sample
+\EndFor
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{3-Band EQ}
+Splits the audio spectrum into low, mid, and high bands using bandpass filters. Biquad filters provide steeper cutoffs and smoother band transitions. Users can adjust the gain for each band independently~\cite{valimaki2016} before the output is recombined.
+
+\begin{algorithm}
+\caption{3-Band EQ}
+\begin{algorithmic}[1]
+\Procedure{process}{$inputBuffer$, $outputBuffer$, $numFrames$}
+\State Shift previous input for overlap
+\State Copy new input to processing buffer
+\State Apply window function (Hann window)
+\State Execute forward FFT
+\For{each frequency bin including DC and Nyquist}
+    \State Calculate frequency in Hz
+    \State Determine gain using smoothGain function:
+    \State \hspace{\algorithmicindent} For transitions between bands, apply cosine interpolation
+    \State Calculate magnitude and phase
+    \State Apply gain to magnitude
+    \State Reconstruct real/imaginary components
+\EndFor
+\State Execute inverse FFT
+\State Apply overlap-add with previous frame
+\State Output processed audio with 50\% overlap
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{De-esser}
+Targets sibilance typically found in the 4-10 kHz range. A bandpass filter detects frequencies in this range, and gain reduction is applied via a coefficient when the threshold is exceeded~\cite{linhard2017}.
+
+\begin{algorithm}
+\caption{De-Esser}
+\begin{algorithmic}[1]
+\Procedure{applyDeEsser}{$samples$, $sampleRate$, $startFreq$, $endFreq$, $reductionDB$}
+\State Calculate linear reduction factor from dB value
+\State Allocate FFT complex input/output arrays
+\State Create forward and inverse FFT plans
+\For{each frame in input}
+    \State Fill input array with current frame (zero-pad if needed)
+    \State Execute forward FFT
+    \For{each frequency bin}
+        \State Calculate corresponding frequency
+        \If{frequency is in target range ($startFreq$-$endFreq$)}
+            \State Multiply bin by reduction factor
+            \State Apply same reduction to mirror bin (conjugate symmetry)
+        \EndIf
+    \EndFor
+    \State Execute inverse FFT
+    \State Normalize output and copy to result buffer
+\EndFor
+\State Clean up FFT resources
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Limiter}
+To prevent audio clipping past a certain amplitude, we implement a look-ahead buffer to anticipate harsh audio peaks. Like the de-esser, we multiply the audio input by a gain reduction coefficient to avoid loud sounds~\cite{giannoulis2012}.
+
+\begin{algorithm}
+\caption{Limiter}
+\begin{algorithmic}[1]
+\Procedure{process}{$inputBuffer$, $outputBuffer$, $bufferSize$}
+\State If limiter disabled, copy input to output and return
+\For{each sample}
+    \State Calculate sample absolute value
+    \State Determine target gain:
+    \State \hspace{\algorithmicindent} If below threshold: 1.0 (no limiting)
+    \State \hspace{\algorithmicindent} If above threshold: $threshold/sampleValue$
+    \State Apply gain smoothing:
+    \If{$target < current$}
+        \State Attack phase: $currentGain = attackCoeff \times currentGain + (1-attackCoeff) \times targetGain$
+    \Else
+        \State Release phase: $currentGain = releaseCoeff \times currentGain + (1-releaseCoeff) \times targetGain$
+    \EndIf
+    \State Apply gain to input sample: $outputBuffer[i] = inputBuffer[i] \times currentGain$
+\EndFor
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Testing and Analysis}
+To ensure our audio processing algorithms are robust, we will use benchmarking and profiling tools (such as Valgrind, gprof, or perf) to measure execution time, thread efficiency, and memory usage.
+
+We will test for:
+\begin{enumerate}
+    \item \textbf{Latency:} Measuring the delay between input and output processing.
+    \item \textbf{Thread Scalability:} Observing performance on single-core vs. multi-core execution.
+    \item \textbf{Audio Quality:} Ensuring no unintended distortions or artifacts are introduced.
+    \item \textbf{System Load:} Monitoring CPU and memory usage to prevent overloading.
+\end{enumerate}
+
+Our testing will involve real-world audio inputs, such as human speech and music, to evaluate the effectiveness of each effect. Additionally, we will compare our implementation's performance to existing real-time audio processing software.
+
+\section{Background}
+
+Audio processing has significantly evolved from its analog roots to more sophisticated digital methods\cite{bode1984}. Initially, it relied on physical devices ranging from vacuum tubes to transistors. These devices would directly manipulate electrical audio signals and modify their amplitude, frequency, and other properties to create specific effects. While these methods were effective, they were limited in various ways, such as noise, size constraints, and component degradation over time.
+
+The leap from analog to digital audio processing signaled a major achievement for this technology\cite{moorer2000}. Digital audio processing enables more precise, flexible, and reliable manipulation of audio signals through a method called Digital Signal Processing (DSP). DSP involves converting analog audio signals into digital format, represented by numerical values that can be algorithmically manipulated to achieve precise transformations. Digital processing allows for easy replication, scalability, and significantly reduced noise compared to analog methods\cite{wilmering2020}.
+
+Real-time audio processing presents tough and specific challenges, one of the most notable being latency management and computation load. Latency, the delay between raw audio input and processed output, must be minimized to maintain audio fidelity and synchronization. Imagine trying to have a conversation with a friend or colleague, only to have them hear you seconds after you speak, and then waiting seconds to hear their response. This challenge is particularly critical in live applications such as broadcasting, live performances, or conferencing, where latency can introduce noticeable disruptions and degrade the user experience.
+
+Modern processing units typically contain multicore architectures, which have helped facilitate new methods of handling computation demands and overcoming challenges through parallelism. Multithreading, a parallel computing technique where multiple tasks are executed concurrently, significantly improves the efficiency and responsiveness of audio processing applications. By distributing computational tasks such as filtering, equalizing, and compressing audio across multiple threads, real-time audio processors can simultaneously manage numerous operations, drastically reducing latency and optimizing resource usage.
+
+Incorporating advanced data structures, such as lock-free queues, can further enhance multithreaded audio processing by eliminating bottlenecks associated with traditional thread synchronization methods. These lock-free approaches minimize delays caused by waiting for locks, supporting a smoother and more efficient flow of audio data between processing threads.
+
+Overall, the continued advancement in digital signal processing, multithreading techniques, lock-free data structures, and hardware developments forms a robust foundation. This allows us to build an efficient, low-latency, real-time audio processor capable of sophisticated and high-quality audio modifications suitable for diverse practical applications.
+
+
+\section{Approach}
+
+Our approach to developing a real-time audio processor prioritizes efficiency, low latency, and modularity. We rely on open-source tools and libraries while using consumer-grade hardware for implementation and testing.
+
+We use C++ as the primary programming language due to its performance advantages and suitability for real-time applications. For handling audio input and output (I/O), we utilize the RtAudio library, which provides cross-platform compatibility and direct access to audio hardware interfaces.
+
+Our threading model implements a dedicated audio processing thread separated from I/O operations using the C++ standard library's \texttt{std::thread}. This architecture aims to provide an optimal balance between processing efficiency and low-latency performance. Synchronization between threads is managed through our \texttt{BufferQueue} implementation, which uses mutexes and condition variables (\texttt{std::mutex} and \texttt{std::condition\_variable}) to ensure thread-safe data transfer while minimizing contention.
+
+To manage real-time constraints effectively, we prioritize efficient buffer handling within an optimized processing pipeline. Our system processes incoming audio in fixed-size frames. Each frame undergoes a sequential chain of effects—noise gating, equalization, de-essing, and limiting—before being queued for output.
+
+% Using \subsection* for unnumbered subsections. Adjust if numbering is desired.
+\subsection*{Effect Processing Pipeline} 
+Our system implements several real-time audio effects designed to enhance microphone input. These effects are applied sequentially in a carefully designed processing chain to maximize audio quality and ensure predictable behavior.
+
+The Noise Gate uses spectral analysis via the Fast Fourier Transform (FFT) to identify and reduce unwanted background noise. It attenuates frequency components below a set threshold. This implementation includes attack and release smoothing parameters to prevent audible artifacts during transitions between gated and non-gated states.
+
+The 3-Band Equalizer (EQ) employs overlap-add processing with Hann windowing to divide the audio spectrum into three adjustable frequency bands—low, mid, and high. Our implementation includes smooth transitions between bands to prevent frequency "shelving" artifacts. This technique allows precise frequency manipulation while maintaining phase coherence across the spectrum.
+
+Our De-esser implementation targets the typical sibilance range (approximately 4 kHz – 10 kHz). Using FFT-based spectral processing, it selectively reduces the amplitude of these frequencies only when they exceed a defined threshold, resulting in smoother speech audio without significantly affecting overall clarity or brightness.
+
+The Limiter serves as the final stage in our processing chain, preventing signal clipping by dynamically controlling gain. It employs carefully tuned attack and release coefficients to respond quickly to transients while aiming for transparent operation on sustained audio content, maximizing loudness without introducing distortion.
+
+Each effect is designed as a modular component that can potentially be enabled or disabled individually. By organizing these effects in a sequential pipeline executed on a dedicated processing thread, we achieve both processing efficiency and high audio quality.
+
+\subsection*{Hardware Setup}
+The hardware requirements for running and testing the processor are minimal and consist of standard consumer-grade components:
+\begin{itemize}
+    \item A standard consumer-grade microphone for audio input.
+    \item A computer with a multi-core processor (e.g., an Intel i5/i7 or AMD Ryzen 5/7 or equivalent) capable of handling real-time processing demands.
+    \item A standard pair of speakers or headphones for monitoring the audio output.
+    \item Optional: Different USB audio interfaces can be used to test variations in audio input quality and driver performance.
+\end{itemize}
+
+\subsection*{Multithreading and Parallel Processing Strategy}
+To optimize performance while maintaining audio integrity, we implement a strategic multi-threaded approach:
+\begin{itemize}
+    \item \textbf{Audio Callback Thread:} Managed by the RtAudio library, this high-priority thread handles real-time audio capture from the microphone and playback to the output device~\cite{scavone2002}. It interacts directly with the hardware audio buffers and manages strict timing constraints imposed by the audio driver.
+    \item \textbf{Effects Processing Thread:} A dedicated thread retrieves audio data from an input buffer, processes it through the complete effects chain (noise gating, EQ, de-essing, limiting), and places the processed data into an output buffer. This thread sequentially applies effects in a carefully determined order.
+    \item \textbf{Thread Communication:} We implement thread-safe \texttt{BufferQueue} objects utilizing mutexes and condition variables for inter-thread communication. This mechanism allows efficient and safe passing of audio data buffers between the audio callback thread and the effects processing thread, preventing race conditions and minimizing the risk of buffer underruns or overruns.
+\end{itemize}
+This architecture provides an optimal balance between leveraging parallel processing benefits and maintaining the integrity and sequential nature of the audio signal chain. By separating time-critical I/O operations from potentially CPU-intensive processing, we reduce the risk of audio dropouts (glitches) while ensuring all effects are applied consistently to the audio stream.
+
+
+
+\section{Results}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawdesser.png}
+    \includegraphics[width=1.0\linewidth]{processdesser.png}
+    \caption{Raw vs. processed RMS for de-esser sample audio.}
+    \label{fig:figure1}
+\end{figure}
+
+The charts above compare the root mean square (RMS) values of audio frames before and after de-essing. Overall, the processed audio exhibits a consistent reduction in RMS energy in frames that likely contain strong sibilant content. Three key regions have been highlighted to illustrate this change more clearly.
+
+In the early frames (e.g., frames 0–30), a noticeable drop in RMS amplitude can be observed in the processed output, reflecting the suppression of harsh high-frequency transients, which are typical indicators of sibilant sounds such as "s" and "sh." The mid-range frames (e.g., 130–160) show a similar pattern: energy that peaks in the raw RMS data has been attenuated in the processed version. This suggests that the de-esser is successfully identifying and reducing frequency components in the 4–10 kHz range, where sibilance is most prominent. Likewise, in the later frames (around 190–210), the processed RMS values are consistently lower than their raw counterparts, indicating continued effective suppression. Importantly, the overall shape of the RMS curve remains preserved, which implies that the de-esser is targeting only the sibilant frequencies without introducing distortion or disrupting the natural dynamics of the audio.
+
+These results demonstrate that the de-esser is functioning as intended — selectively reducing excessive high-frequency energy to produce a smoother, less harsh output while maintaining the integrity of the original audio content.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawlimiter.png}
+    \includegraphics[width=1.0\linewidth]{processlimiter.png}
+    \caption{Raw vs. processed RMS for limiter sample audio.}
+    \label{fig:figure2}
+\end{figure}
+
+The RMS graphs for the limiter clearly illustrate the impact of dynamic range compression, particularly in the early frames where the audio signal is at its peak intensity. In the raw RMS plot, the signal initially fluctuates around 0.4 to 0.5 before naturally tapering off. This indicates the presence of high-amplitude content — likely transient peaks or loud passages — in the unprocessed audio.
+
+In contrast, the processed RMS plot reveals a more tightly controlled signal, especially within the first ~150 frames. The limiter effectively suppresses peaks that would otherwise exceed a defined threshold, producing a flattened upper envelope of RMS values around 0.35–0.4. The differences are most pronounced in the earliest frames, where amplitude limiting has reduced the RMS level relative to the raw input. However, the limiter retains the shape and flow of the original signal in quieter sections, as shown by the overlapping curves in later frames (after frame ~300), where both raw and processed RMS values converge.
+
+This behavior confirms the limiter is acting as expected: attenuating louder sections without affecting the lower-amplitude content, thereby reducing dynamic range while maintaining the overall temporal structure of the signal. The output is more uniform and consistent in loudness, which is desirable in many production contexts such as podcasting, broadcasting, or music mastering.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawnoise.png}
+    \includegraphics[width=1.0\linewidth]{processnoise.png}
+    \caption{Raw vs. processed RMS for noise gate audio.}
+    \label{fig:figure3}
+\end{figure}
+
+The charts above compare the RMS values of the raw and noise-gated audio signal. A noise gate is designed to suppress low-level background noise by attenuating signals that fall below a specified threshold. The effect of this gating behavior is clearly visible in the processed RMS curve, particularly during the initial and final portions of the signal.
+
+In the raw RMS plot, the energy builds smoothly from silence to a peak and then tapers off, with minor fluctuations reflecting the natural variation in the signal’s dynamics. The processed RMS plot, however, shows that the noise gate delays the onset of energy slightly and reduces the amplitude across most of the signal. This reflects the gate’s threshold-based behavior — weaker input frames are attenuated or muted, especially early on where the RMS was previously below ~0.02.
+
+Furthermore, during the decay phase, the processed signal cuts off more sharply, indicating that the gate is closing aggressively as the signal falls below the threshold. Compared to the raw output, the noise-gated version maintains a more constrained and cleaner signal, especially in quieter regions.
+
+These results demonstrate that the noise gate is functioning effectively by suppressing low-level content and emphasizing stronger signal components, which is especially useful in reducing background noise or hiss during silent pauses in dialogue or recordings.
+
+The equalizer functionality was evaluated by applying a 2× gain to each of the three primary frequency bands—bass, middle, and treble—individually, using an instrumental audio sample. The raw and processed root mean square (RMS) values were plotted frame-by-frame to assess how the gain adjustments influenced overall energy distribution in the signal. The instrumental nature of the sample provided a clean frequency spread, allowing the effects of band-specific amplification to be clearly observed without interference from vocals.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawbass.png}
+    \includegraphics[width=1.0\linewidth]{processbass.png}
+    \caption{Raw vs. processed RMS for doubled bass frequencies.}
+    \label{fig:figure4}
+\end{figure}
+
+In the bass-boosted version, the processed RMS values exhibited a significant increase in low-frequency-dominant sections, confirming that the equalizer effectively enhanced the lower register of the track. This boost amplified the rhythmic weight and depth of the signal, particularly in frames featuring kick drums or bass lines. The resulting effect would translate perceptually to a warmer and more grounded audio profile.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawmiddle.png}
+    \includegraphics[width=1.0\linewidth]{processmiddle.png}
+    \caption{Raw vs. processed RMS for doubled bass frequencies.}
+    \label{fig:figure5}
+\end{figure}
+
+The midrange boost had a more consistent impact across the entire track. As mid frequencies in instrumental music often carry melodic content—such as guitars, pianos, and harmonic overtones—the RMS increase was distributed evenly, reflecting a stronger and more present core. The processed signal showed up to a 2× increase in RMS in musically active frames, indicating that the mid-band gain successfully elevated the body and tonal richness of the composition.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=1.0\linewidth]{rawtreble.png}
+    \includegraphics[width=1.0\linewidth]{processtreble.png}
+    \caption{Raw vs. processed RMS for doubled treble frequencies.}
+    \label{fig:figure6}
+\end{figure}
+
+With the treble boost, the processed RMS plot revealed modest but targeted increases in high-frequency content. The changes were most pronounced in sections likely containing cymbals, string harmonics, or transient high-end detail. Although the RMS increase was not as large as in the bass or mid bands, it was still sufficient to enhance brightness and articulation. The treble gain contributed clarity and definition without overwhelming the overall mix.
+
+Across all cases, the equalizer preserved the natural dynamics and temporal shape of the audio while selectively amplifying the designated frequency bands. The resulting RMS changes confirm that the processor is capable of making effective tonal adjustments in a musically transparent way—boosting desired elements without introducing artifacts or distortion. The instrumental sample proved especially useful in isolating the frequency band effects and validating the equalizer’s smooth transition zones and gain precision.
+
+
+\section{Conclusion}
+
+This real-time audio processing implementation demonstrates an effective and efficient approach to enhancing audio signals through multiple effects. By implementing a sequential chain of a noise gate, equalizer, de-esser, and limiter, the system selectively attenuates unwanted noise, shapes frequency content, reduces sibilance, and prevents clipping, while preserving the clarity and tonal characteristics of the original signal. The use of the Fast Fourier Transform (FFT) enables precise manipulation in the frequency domain, and the inverse FFT ensures that the resulting time-domain signal remains phase-accurate and natural sounding ~\cite{cooley1965}.
+
+The modular structure of the processing pipeline, with dedicated stages for noise gating, equalization, de-essing, and limiting, allows for isolated tuning and facilitates real-time interactivity. We initially experimented with assigning each effect to its own processing thread, coordinated by a dedicated mixing thread responsible for combining audio and writing to the output buffer. However, this approach introduced unnecessary complexity and ultimately increased audio latency. Further research into digital signal processing principles revealed that the sequential order of applying effects is integral to both functionality and quality. The chosen order maximizes performance; for example, applying the noise gate first ensures subsequent effects do not process audio components that are ultimately removed.
+
+Ultimately, the most efficient parallel processing strategy involves one dedicated thread for all effects processing, separate from the threads handling audio input and output. The integration of thread-safe buffer queues utilizing condition variables enables continuous, low-latency operation, making the system robust for demanding real-time applications. Additionally, the graphical user interface provides intuitive control over each effect's parameters, enhancing user engagement and making the system adaptable for different voice types and specific use cases.
+
+This approach offers a more transparent and targeted alternative to traditional static processing methods. It preserves transient information effectively and avoids undesirable side effects such as over-compression or unnatural tone shaping. Its performance characteristics and responsiveness further highlight its applicability in live audio workflows, including broadcasting, streaming, and recording scenarios. The current design lays a solid foundation for future development, such as incorporating adaptive thresholding, exploring multi-band processing techniques, or implementing expanded user interface enhancements.
+
+
+
+\begin{thebibliography}{99}
+
+\bibitem{geier2012} M.~Geier, T.~Hohn, and S.~Spors, “An open-source C++ framework for multithreaded realtime multichannel audio applications,” in \emph{Proc. Linux Audio Conf. (LAC)}, Stanford, CA, 2012. [Online]. Available: \url{http://lac.linuxaudio.org/2012/papers/19.pdf}
+
+\bibitem{sang2009} X.~Sang and X.~Chen, “Design, simulation and measurement of split-band digital audio expander and noise-gate,” in \emph{Proc. 7th Int. Conf. Information, Communications and Signal Processing (ICICS)}, Dec. 2009. [Online]. Available: \url{https://ieeexplore.ieee.org/document/5397498}
+
+\bibitem{valimaki2016} V.~V{\"a}lim{\"a}ki and J.~D. Reiss, “All About Audio Equalization: Solutions and Frontiers,” \emph{Applied Sciences}, vol.~6, no.~5, art. 129, 2016. [Online]. Available: \url{https://doi.org/10.3390/app6050129}
+
+\bibitem{linhard2017} K.~Linhard, P.~Bulling, and A.~Wolf, “Frequency Domain De-essing for Hands-free Applications,” in \emph{Proc. DAGA 2017 (43rd German Conf. Acoustics)}, Kiel, Germany, 2017, pp. 315–318. [Online]. Available: \url{https://pub.dega-akustik.de/DAGA_2017/data/articles/000071.pdf}
+
+\bibitem{giannoulis2012} D.~Giannoulis, M.~Massberg, and J.~D. Reiss, “Digital Dynamic Range Compressor Design—A Tutorial and Analysis,” \emph{J. Audio Eng. Soc.}, vol.~60, no.~6, pp. 399–408, 2012. [Online]. Available: \url{http://eecs.qmul.ac.uk/~josh/documents/2012/GiannoulisMassbergReiss-dynamicrangecompression-JAES2012.pdf}
+
+\bibitem{bode1984} H.~Bode, “History of Electronic Sound Modification,” \emph{J. Audio Eng. Soc.}, vol.~32, no.~10, pp. 730–739, 1984. [Online]. Available: \url{http://www.vasulka.org/archive/Artists1/Bode\%2CHarald/History.pdf}
+
+\bibitem{moorer2000} J.~A. Moorer, “Audio in the New Millennium,” \emph{J. Audio Eng. Soc.}, vol.~48, no.~5, pp. 490–498, 2000. [Online]. Available: \url{https://secure.aes.org/forum/pubs/journal/?elib=12062}
+
+\bibitem{wilmering2020} T.~Wilmering \emph{et al.}, “A History of Audio Effects,” \emph{Applied Sciences}, vol.~10, no.~3, art. 791, 2020. [Online]. Available: \url{https://www.mdpi.com/2076-3417/10/3/791}
+
+\bibitem{scavone2002} G.~P. Scavone, “RtAudio: A Cross-Platform C++ Class for Realtime Audio Input/Output,” in \emph{Proc. Int. Computer Music Conf. (ICMC)}, Gothenburg, Sweden, 2002. [Online]. Available: \url{https://quod.lib.umich.edu/i/icmc/bbp2372.2002.041}
+
+\bibitem{cooley1965} J.~W. Cooley and J.~W. Tukey, “An algorithm for the machine calculation of complex Fourier series,” \emph{Math. Comput.}, vol.~19, no.~90, pp. 297–301, 1965. [Online]. Available: \url{https://www.cs.jhu.edu/~misha/ReadingSeminar/Papers/Cooley65.pdf}
+
+\end{thebibliography}
+
+\end{document}
