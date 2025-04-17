@@ -1,4 +1,4 @@
-# multiaudio
+# MultiAudio
 
 **🎧Multithreaded Real-Time Audio Processor in C++**
 
